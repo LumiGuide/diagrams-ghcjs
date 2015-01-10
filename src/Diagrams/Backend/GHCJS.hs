@@ -23,6 +23,7 @@ import           Data.Maybe           (catMaybes, maybe, isJust, fromJust)
 import           Data.Monoid          ((<>))
 import           Data.Typeable
 import qualified Data.Text            as T
+import           Data.Tree            (Tree(Node))
 
 import           Diagrams.Prelude     hiding ((<>), view)
 import           Diagrams.TwoD.Adjust (adjustDia2D)
@@ -30,6 +31,7 @@ import           Diagrams.TwoD.Path   (getFillRule, Clip(..))
 import           Diagrams.TwoD.Text   (getFont, getFontSize)
 import qualified Diagrams.TwoD.Text   as D
 import           Diagrams.Segment
+import           Diagrams.Core.Types  (RNode(..), Annotation)
 
 import qualified Graphics.Rendering.GHCJS as G
 
@@ -48,29 +50,59 @@ instance Monoid (Render Canvas R2) where
 -- type G.Render a = StateT Bool G.Render a
 
 instance Backend Canvas R2 where
-    data Render  Canvas R2 = C (G.Render ())
-    type Result  Canvas R2 = IO ()
-    data Options Canvas R2 = CanvasOptions
-            { canvasSize   :: SizeSpec2D   -- ^ the requested size
-            , context      :: G.Context    -- ^ drawing context to render to
+    newtype Render  Canvas R2 = C {unC :: G.Render ()}
+    type    Result  Canvas R2 = IO ()
+    data    Options Canvas R2 = CanvasOptions
+            { _canvasSize   :: SizeSpec2D   -- ^ the requested size
+            , _context      :: G.Context    -- ^ drawing context to render to
             }
 
-    withStyle _ s t (C r) = C $ G.tempState $ do
-        clearPath  -- path is not part of the drawing state :/
-        canvasMiscStyle s
-        G.setIgnoreFill False
-        r
-        ignoreFill <- G.getIgnoreFill
-        canvasTransf t
-        canvasStyle ignoreFill s
-        G.stroke
+    renderRTree
+        :: Canvas
+        -> Options Canvas R2
+        -> Tree (RNode Canvas R2 Annotation)
+        -> Result Canvas R2
+    renderRTree c (CanvasOptions _sz ctx) rtree = G.doRender ctx $ unC $ go rtree
+      where
+        go :: Tree (RNode Canvas R2 Annotation) -> Render Canvas R2
+        go (Node rnode trees) = case rnode of
+            RStyle style  -> withStyle style r
+            RPrim prim    -> render c prim <> r
+            RAnnot _annot -> r
+            REmpty        -> r
+          where
+            r :: Render Canvas R2
+            r = F.foldMap go trees
 
-    doRender _ (CanvasOptions _ c) (C r) = G.doRender c r
-
-    adjustDia c opts d = adjustDia2D canvasSize setCanvasSize c opts
+    adjustDia
+        :: (Monoid' m, Num (Scalar R2))
+        => Canvas
+        -> Options Canvas R2
+        -> QDiagram Canvas R2 m
+        -> ( Options Canvas R2
+           , Transformation R2
+           , QDiagram Canvas R2 m
+           )
+    adjustDia c opts d = adjustDia2D canvasSize c opts
                          -- (d # reflectY # fcA transparent # lw 0.01)
                          (d # reflectY)
-        where setCanvasSize sz o = o { canvasSize = sz }
+
+canvasSize :: Lens' (Options Canvas R2) SizeSpec2D
+canvasSize = lens g s
+  where
+    g opts    = _canvasSize opts
+    s opts sz = opts{_canvasSize = sz}
+
+withStyle :: Style v -> Render Canvas R2 -> Render Canvas R2
+withStyle s r = C $ G.tempState $ do
+    clearPath  -- path is not part of the drawing state :/
+    canvasMiscStyle s
+    G.setIgnoreFill False
+    unC r
+    ignoreFill <- G.getIgnoreFill
+    -- TODO (basvandijk): canvasTransf t
+    canvasStyle ignoreFill s
+    G.stroke
 
 clearPath :: G.Render()
 clearPath = G.newPath >> G.closePath
@@ -82,12 +114,12 @@ canvasMiscStyle :: Style v -> G.Render ()
 canvasMiscStyle s = sequence_ $ catMaybes
     [ handleClipping s
     , handleFont s
-    , handle fColor
+    -- TODO (basvandijk): , handle fColor
     , handle fRule
     ] where
         handle :: AttributeClass a => (a -> G.Render ()) -> Maybe (G.Render ())
         handle f = f `fmap` getAttr s
-        fColor   = G.fillColor   . getFillColor
+        -- TODO (basvandijk): fColor   = G.fillColor   . getFillColor
         fRule    = G.setFill     . getFillRule
 
 handleFont s = Just $ G.setFont $
@@ -102,7 +134,7 @@ handleFont s = Just $ G.setFont $
         fontSlant'  = getAttr s :: Maybe (D.FontSlantA)
         fontWeight' = getAttr s :: Maybe (D.FontWeightA)
         fontFamily  = maybe "Arial" getFont fontFamily'
-        fontSize    = maybe 10 getFontSize fontSize'
+        fontSize    = maybe 10 (fromOutput . getFontSize) fontSize'
         fontSlant   = maybe D.FontSlantNormal D.getFontSlant fontSlant'
         fontWeight  = maybe D.FontWeightNormal D.getFontWeight fontWeight'
 
@@ -111,20 +143,20 @@ handleClipping s = (clipCanv . \(Clip x) -> x) `fmap` getAttr s
 
 canvasStyle :: Bool -> Style v -> G.Render ()
 canvasStyle ignoreFill s = foldr (>>) (return ()) . catMaybes $
-    [ handle lColor
-    , handle lWidth
+    [ -- TODO (basvandijk): handle lColor
+      handle lWidth
     , handle lJoin
     , handle lCap
     , handle opacity_
     , handle dashing_
     , if ignoreFill then Nothing else handle fRule
-    , if ignoreFill then Nothing else handle fColor
+    -- TODO (basvandijk): , if ignoreFill then Nothing else handle fColor
     ] where
         handle :: AttributeClass a => (a -> G.Render ()) -> Maybe (G.Render ())
         handle f = f `fmap` getAttr s
-        lColor   = G.strokeColor . getLineColor
-        fColor s = (G.fillColor   $ getFillColor s) >> G.fill
-        lWidth   = G.lineWidth   . getLineWidth
+        -- TODO (basvandijk): lColor   = G.strokeColor . getLineColor
+        -- TODO (basvandijk): fColor s = (G.fillColor   $ getFillColor s) >> G.fill
+        lWidth   = G.lineWidth   . fromOutput . getLineWidth
         lCap     = G.lineCap     . getLineCap
         lJoin    = G.lineJoin    . getLineJoin
         opacity_ = G.globalAlpha . getOpacity
@@ -177,7 +209,8 @@ instance Renderable (Path R2) Canvas where
   render _ (Path trs) = C $ G.newPath >> F.mapM_ renderTrail trs
 
 instance Renderable D.Text Canvas where
-    render _ (D.Text tt a str) = C $ G.tempState $ do
+    -- TODO (basvandijk): Handle tt2!
+    render _ (D.Text tt _tt2 a str) = C $ G.tempState $ do
         uncurry6 G.setTransform $ getMatrix $ tt <> reflectionY
         -- TODO(joel) - major hack here
         fontSz <- (/10) <$> G.fontSize <$> get

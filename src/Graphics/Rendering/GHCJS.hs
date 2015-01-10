@@ -51,11 +51,12 @@ import           Data.NumInstances       ()
 import           Data.Maybe
 import           Data.Text               (Text, unpack)
 import qualified Data.Text            as T
-import           Diagrams.Attributes     (Color (..), Dashing (..),
-                                          LineCap (..), LineJoin (..),
+import           Diagrams.Attributes     (Color (..), LineCap (..), LineJoin (..),
                                           colorToRGBA)
 import           Diagrams.TwoD.Path      (FillRule(..))
 import qualified Diagrams.TwoD.Text   as D
+import           Diagrams.TwoD.Attributes (Dashing (..))
+import           Diagrams.Core.Types      (fromOutput)
 
 import           JavaScript.Canvas       (Context)
 import qualified JavaScript.Canvas       as C
@@ -190,8 +191,8 @@ fillColor c = ctx (C.fillStyle r g b a)
     where (r,g,b,a) = colorToJSRGBA c
 
 dashing :: Dashing -> Render ()
-dashing (Dashing a o) = ctx (C.setLineDash a)
-                     >> ctx (C.lineDashOffset o)
+dashing (Dashing a o) = ctx (C.setLineDash $ map fromOutput a)
+                     >> ctx (C.lineDashOffset $ fromOutput o)
 
 lineWidth :: Double -> Render ()
 lineWidth w | abs w < 0.00001 = ctx (C.lineWidth 0.00001)
